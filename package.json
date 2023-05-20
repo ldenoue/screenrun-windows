@@ -1,0 +1,74 @@
+{
+  "name": "screenrun",
+  "productName": "ScreenRun",
+  "version": "1.0.0",
+  "description": "ScreenRun - Companion app to capture screen recordings with mouse coordinates and import into the ScreenRun.app website",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "electron-forge start",
+    "package": "electron-forge package",
+    "make": "electron-forge make",
+    "make-deb": "electron-forge make --platform linux --arch x64",
+    "make-rpm": "electron-forge make --platform linux --arch x64 --targets rpm",
+    "publish": "electron-forge publish",
+    "lint": "echo \"No linting configured\""
+  },
+  "keywords": [],
+  "author": "Laurent Denoue",
+  "license": "MIT",
+  "config": {
+    "forge": {
+      "packagerConfig": {
+        "icon": "./src/assets/icon.ico",
+        "assets": "./src/assets"
+      },
+      "makers": [
+        {
+          "name": "@electron-forge/maker-appx",
+          "config": {
+            "publisher": "CN=B273F068-A949-4780-A7E5-AC5CF7D40C8D",
+            "publisherDisplayName": "AppBlit LLC",
+            "description": "ScreenRun - Companion app to capture screen recordings with mouse coordinates and import into the ScreenRun.app website",
+            "displayName": "ScreenRun",
+            "identityName": "57815AppBlitLLC.ScreenRun",
+            "familyName": "57815AppBlitLLC.ScreenRun_z1bs9arj11rnm",
+            "assets": "./src/assets"
+          }
+        },
+        {
+          "name": "@electron-forge/maker-squirrel",
+          "config": {
+            "name": "screenrun"
+          }
+        },
+        {
+          "name": "@electron-forge/maker-zip",
+          "platforms": [
+            "darwin"
+          ]
+        },
+        {
+          "name": "@electron-forge/maker-deb",
+          "config": {
+            "icon": "./src/assets/icon.png"
+          }
+        }
+      ]
+    }
+  },
+  "dependencies": {
+    "electron-prompt": "^1.7.0",
+    "electron-squirrel-startup": "^1.0.0",
+    "node-window-manager": "^2.2.4"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "^6.0.0-beta.61",
+    "@electron-forge/maker-appx": "^6.0.0-beta.61",
+    "@electron-forge/maker-deb": "^6.0.0-beta.61",
+    "@electron-forge/maker-rpm": "^6.0.0-beta.61",
+    "@electron-forge/maker-squirrel": "^6.0.0-beta.61",
+    "@electron-forge/maker-zip": "^6.0.0-beta.61",
+    "electron": "16.0.0",
+    "electron-installer-debian": "^3.1.0"
+  }
+}

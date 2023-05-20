@@ -1,0 +1,111 @@
+@keyframes fadein {
+    from {
+      opacity: 0;
+    }
+  
+    to {
+      opacity: 1;
+    }
+  }
+:root{
+    --screegle-green:rgb(64,153,105);
+}
+
+body{
+    width:100vw;
+    height:100vh;
+    padding:0;
+    margin:0;
+    -webkit-app-region: drag;
+    aspect-ratio: 16/9;
+    /*background-image: url(bigsur.jpg);
+    background-repeat: no-repeat;
+    background-size:contain;*/
+    background-color: black;
+    position: relative;
+    overflow: hidden;
+    font-family: Arial, Helvetica, sans-serif;
+    user-select: none;
+    background-color: var(--screegle-green);
+}
+body:after{
+    content:'Screegle';
+    font-size:22vh;
+    height:100%;
+    color:rgba(255,255,255,0.6);
+    display:flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+}
+.fullscreen{
+    width:100%;
+    height:100%;
+    object-fit: fill;
+    position:absolute;
+    top:0;
+    left:0;
+    pointer-events: none;
+    animation: 0.5s linear fadein;
+}
+#desktopview{
+    z-index:0;
+    display:none;
+}
+#labelview{
+    z-index:1;
+    position:absolute;
+    right:0;
+    bottom:0;
+    font-size:24px;
+    opacity: 1;
+    color:rgba(255,255,255,0.6);
+    margin:4px 8px;
+    display:none;
+}
+#menuview{
+    z-index:2000;
+    display:none;
+}
+#dockview{
+    z-index:2000;
+    display:none;
+}
+video{
+    position:absolute;
+    object-fit: fill;
+    border-radius:8px;
+    box-shadow: 0 0 3px rgba(0,0,0,0.5);
+    animation: 0.5s linear fadein;
+}
+#previewimage{
+    width:100%;
+    height:100%;
+    object-fit: fill;
+}
+#cursor{
+    z-index:20000;
+    position:absolute;
+    width:12px;
+    height:auto;
+    transform:translate(0px,-2px);
+}
+#debug{
+    position:absolute;
+    top:0;left:0;
+    color:white;
+}
+/*.topleft{
+    bottom:auto;
+    top:0
+}*/
+.windowslabel{
+    z-index: 2001!important;
+    color:black!important;
+    opacity:0.6!important;
+    font-size:18px!important;
+    margin:6px 12px!important;
+}
+.square{
+    border-radius: 0px!important;
+}
