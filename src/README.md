@@ -1,2 +1,2 @@
-# screegle-electron
-Screegle for Mac, Windows and Linux
+# screenrun-electron
+ScreeRun for Mac, Windows and Linux

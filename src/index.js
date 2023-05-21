@@ -1,12 +1,16 @@
-// Modules to control application life and create native browser window
-const { nativeImage, dialog, shell, app, BrowserWindow, desktopCapturer, screen, globalShortcut, ipcMain, Menu, Tray } = require('electron')
+const { nativeImage, dialog, shell, app, BrowserWindow, desktopCapturer, screen, /*systemPreferences,*/ globalShortcut, ipcMain, Menu, Tray } = require('electron')
 const path = require('path')
 const shortCut = 'CommandOrControl+F1'
 const isWindows = process.platform === 'win32'
 
+const pathToFfmpeg = require('ffmpeg-static');
+console.log(pathToFfmpeg);
+const { exec } = require('child_process');
+
+const appName = 'ScreenRun'
 // https://github.com/electron/electron/pull/27572
 let roundedCorners = true
-const { writeFile } = require('fs')
+const { writeFile, writeFileSync, rename, unlinkSync } = require('fs')
 //console.log(writeFile)
 const prompt = require('electron-prompt');
 const Store = require('./store.js');
@@ -16,15 +20,17 @@ const store = new Store({
   defaults: {
     showMenu: !isWindows,
     showDock: true,
-    textOverlay: 'Screegle',
+    textOverlay: appName,
     background: 'bigsur.jpg'
   }
 });
 
 const { windowManager } = require('node-window-manager')
-const { posix } = require('path')
-const { callbackify } = require('util')
-const { runInContext } = require('vm')
+
+const windowWidth = 320
+const windowHeight = 240
+let screenWidth = 1280
+let screenHeight = 720
 
 /*windowManager.on("window-activated", (window) => {
   console.log('activated',window.getTitle(),window.id,mainWindowId);
@@ -32,52 +38,23 @@ const { runInContext } = require('vm')
 
 let menu = null;
 let mainWindow = null;
-let previewWindow = null;
-let helpWindow = null;
-let BORDER = 32
-let WINDOWS_EXTRA = 0
-if (isWindows) {
-  BORDER = 64
-  WINDOWS_EXTRA = 32
-}
-
-let showMenu = isWindows?false:store.get('showMenu')
-let showDock = store.get('showDock')
-let textOverlay = store.get('textOverlay')
-let background = store.get('background')
-
+let mouseClicks = []
+let startTime = null
 let tray = null
-let screenWidth = 1280
-let screenHeight = 720
 
 let capturedWindows = {}
 let interval = null
-let intervalCursor = null
-let snapshotTimeout = null
 
-let realRect = {width:1280,height:720}
-let previewScale = 6
-let previewRect = {width:parseInt(realRect.width/previewScale),height:parseInt(realRect.height/previewScale)}
-let scaleX = 1
-let scaleY = 1
-
-let mainWindowId = null
-let lastCursor = null
-let previousOrder = ''
-
-function scaledBounds(bounds) {
-  return {
-    x: parseInt(bounds.x * scaleX),
-    y: parseInt(bounds.y * scaleY),
-    width: parseInt(bounds.width * scaleX),
-    height: parseInt(bounds.height * scaleY)
-  }
-}
-
-function scaledPosition(pos) {
-  return {
-    x: parseInt(pos.x * scaleX),
-    y: parseInt(pos.y * scaleY)
+function unhighlight(mediaSourceId) {
+  highlightWindowId = null
+  startTime = null
+  console.log('mouseClicks=',mouseClicks)
+  let id = parseInt(mediaSourceId.split(':')[1])
+  if (capturedWindows[id]) {
+    let res = capturedWindows[id]
+    res.highlightWindow.close();
+    mainWindow.webContents.send("fromMain", {stop:mediaSourceId});
+    delete capturedWindows[id]
   }
 }
 
@@ -86,17 +63,13 @@ async function toggleCapture() {
   let w = await windowUnderPoint(mousePos)
   if (!w)
     return;
-  let bounds = scaledBounds(w.getBounds())
   if (capturedWindows[w.id]) {
-    let res = capturedWindows[w.id]
-    res.highlightWindow.close();
-    mainWindow.webContents.send("fromMain", {stop:res.mediaSourceId,bounds});
-    delete capturedWindows[w.id]
+    unhighlight(capturedWindows[w.id].mediaSourceId)
   } else {
     let res = await highlight(w,w.mediaSourceId);
     if (res) {
       capturedWindows[w.id] = res
-      mainWindow.webContents.send("fromMain", {start:res.mediaSourceId,bounds});
+      mainWindow.webContents.send("fromMain", {start: res.mediaSourceId});
     }
   }
 }
@@ -105,34 +78,11 @@ function sameBounds(b1,b2) {
   return b1.x === b2.x && b1.y === b2.y && b1.width === b2.width && b1.height === b2.height
 }
 
-/*function snapshot() {
-  mainWindow.webContents.capturePage().then(image => {
-    let t = image.resize({width:previewRect.width,height:previewRect.height})
-    let dataurl = t.toDataURL([{scaleFactor:0.2}]);
-    //console.log(url)
-    console.log(dataurl.length,t.getSize())
-    previewWindow.webContents.send("fromMain", {dataurl});
-    snapshotTimeout = setTimeout(() => snapshot(), 1000);
-  });
-}*/
-
-function repositionCursor() {
-  let mousePos = screen.getCursorScreenPoint();
-  if (!lastCursor || lastCursor.x !== mousePos.x || lastCursor.y !== mousePos.y) {
-    mainWindow.webContents.send("fromMain", {cursor: scaledPosition(mousePos)});
-  }
-  lastCursor = mousePos
-}
-
 function repositionWindows() {
-  /*let mousePos = screen.getCursorScreenPoint();
-  if (!lastCursor || lastCursor.x !== mousePos.x || lastCursor.y !== mousePos.y) {
-    mainWindow.webContents.send("fromMain", {cursor: scaledPosition(mousePos)});
-  }
-  lastCursor = mousePos*/
+  if (!highlightWindowId)
+    return
   let capturedWindowIds = Object.keys(capturedWindows).map(i => parseInt(i))
   let windows = windowManager.getWindows()
-  let newOrder = [];
   let visibleWindows = windows.map(w => w.id)
   let recompute = false
   for (let capturedId of capturedWindowIds) {
@@ -143,39 +93,51 @@ function repositionWindows() {
   }
   if (recompute)
     capturedWindowIds = Object.keys(capturedWindows).map(i => parseInt(i))
+
+    if (capturedWindowIds.length === 0)
+    return
+  let capturedWindowId = capturedWindowIds[0]
+  let capturedWindowSeen = false
+  let highlightWindowUnder = false
+  let myWnd = null
   for (let w of windows) {
+    if (w.id === capturedWindowId)
+      capturedWindowSeen = true
+    if (w.id === highlightWindowId && !capturedWindowSeen)
+      highlightWindowUnder = true
     let wnd = capturedWindows[w.id]
     if (wnd) {
+      myWnd = wnd
       try {
+        capturedBounds = w.getBounds()
         let oldBound = wnd.highlightWindow.oldBound;//getBounds()
-        let newBound = adjustBounds(w.getBounds())
-        newOrder.push(wnd.mediaSourceId)
+        let newBound = adjustBounds(capturedBounds)
         if (!sameBounds(oldBound,newBound)) {
           wnd.highlightWindow.oldBound = newBound
-          mainWindow.webContents.send("fromMain", {move:wnd.mediaSourceId,bounds:scaledBounds(newBound)})
           wnd.highlightWindow.setBounds(newBound)
         }
-        wnd.highlightWindow.moveAbove(wnd.mediaSourceId)
       } catch (e) {
-        console.log('moveAbove error',e)
       }
-    }
-    if (newOrder.length > 0) {
-      let stringOrder = newOrder.join(',');
-      if (stringOrder !== previousOrder) {
-        //console.log('zorder',{stringOrder,previousOrder,newOrder})
-        mainWindow.webContents.send("fromMain", {order:newOrder});
-      }
-      previousOrder = stringOrder
     }
   }
-  /*if (!sent && mainWindowId) {
-    sent = true
-    previewWindow.webContents.send("fromMain", {mediaSourceId:'window:' + mainWindowId + ':0'})
-  }*/
-  //console.log(mainWindowId)
+  if (!highlightWindowUnder) {
+    try {
+      myWnd.highlightWindow.moveAbove(myWnd.mediaSourceId)
+    } catch (e) {}
+    if (startTime) {
+      let mousePos = {...screen.getCursorScreenPoint()};
+      mousePos.x -= capturedBounds.x
+      mousePos.y -= capturedBounds.y
+      mousePos.type = 'click'
+      mousePos.ts = Date.now() - startTime
+      mouseClicks.push(mousePos)
+      console.log(mousePos)
+    }
+  }
 }
 
+let highlightWindowId = null
+let capturedBounds = null
 function adjustBounds(bounds) {
   if (isWindows)
     return {x: bounds.x + 4 , y: bounds.y, width: bounds.width - 10, height: bounds.height - 6}
@@ -184,8 +146,11 @@ function adjustBounds(bounds) {
 }
 
 async function highlight(window,mediaSourceId) {
+  console.log('highlight',window.id)
+  mouseClicks = []
   let windowId = window.id
   let bounds = adjustBounds(window.getBounds())
+  let windowsBefore = windowManager.getWindows().map(w => w.id)
   // TODO: check win.moveAbove(mediaSourceId
   // see https://www.electronjs.org/docs/latest/api/browser-window
   let highlightWindow = new BrowserWindow({
@@ -194,20 +159,32 @@ async function highlight(window,mediaSourceId) {
     width: bounds.width,
     height: bounds.height, 
     transparent: true,
-    frame:false,
+    frame: false,
+    //title: 'ScreenRunOverlay',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false, // is default value after Electron v5
       contextIsolation: true, // protect against prototype pollution
     }
   })
+  //highlightWindow.setTitle('ScreenRunOvelay')
+  //highlightWindow.setAlwaysOnTop(true)
   highlightWindow.oldBound = bounds
   highlightWindow.loadURL(`file://${__dirname}/highlight.html`)
   highlightWindow.setBounds(bounds);
   highlightWindow.setIgnoreMouseEvents(true)
 
+  highlightWindow.webContents.on('did-finish-load', function() {
+    setTimeout(() => {
+      let windowsAfter = windowManager.getWindows().map(w => w.id)
+      let difference = windowsAfter.filter(x => !windowsBefore.includes(x));
+      console.log('difference=',difference)
+      highlightWindowId = difference[0]
+    }, 1000)
+  });
+
   //highlightWindow.webContents.openDevTools()
-  return {highlightWindow,mediaSourceId}
+  return {highlightWindow,mediaSourceId,windowId}
 }
 
 function containsPoint(box,pos) {
@@ -262,11 +239,11 @@ async function windowUnderPoint(pos) {
   return res
 }
 
-function showHelp() {
+/*function showHelp() {
   if (helpWindow)
     return helpWindow.show()
   helpWindow = new BrowserWindow({
-    title: 'Screegle Help',
+    title: 'ScreenRun Help',
     width: 800,
     height: 600,
     x: screenWidth/2-400,
@@ -295,22 +272,20 @@ function showHelp() {
   helpWindow.on('close', () => {
     helpWindow = null
   })
-}
+}*/
 
-function createWindow (w,h,callback) {
+function createWindow (callback) {
   // Create the browser window.
   mainWindow = new BrowserWindow({
     icon: getIcon(),
-    title: 'Screegle Share',
-    //x: roundedCorners?w - previewRect.width - BORDER:screenWidth-BORDER,
-    //y: roundedCorners?BORDER:screenHeight-BORDER,
-    //width: roundedCorners?previewRect.width - BORDER:realRect.width,
-    //height: roundedCorners?previewRect.height - BORDER:realRect.height,
-    x: screenWidth - BORDER,
-    y: screenHeight - BORDER - WINDOWS_EXTRA,
-    width: realRect.width,
-    height: realRect.height,
+    title: 'ScreenRun Share',
+    x: (screenWidth-windowWidth)/2,
+    y: (screenHeight-windowHeight)/2,
+    width: windowWidth,
+    height: windowHeight,
+    //acceptFirstMouse: true,
     frame: false,
+    //transparent: true,
     skipTaskbar: true, // for Windows: we don't want user to close our windows
     roundedCorners: roundedCorners,
     resizable: false,
@@ -322,6 +297,7 @@ function createWindow (w,h,callback) {
     }
   })
 
+  mainWindow.hide()
   // and load the index.html of the app.
   mainWindow.loadFile(path.join(__dirname,'index.html'))
 
@@ -346,7 +322,7 @@ async function promptNow(title,label,value) {
   return res;
 }
 
-async function createPreviewWindow (w,h,callback) {
+/*async function createPreviewWindow (w,h,callback) {
   previewWindow = new BrowserWindow({
     icon: getIcon(),
     acceptFirstMouse: true, // macOS
@@ -375,11 +351,12 @@ async function createPreviewWindow (w,h,callback) {
   });
   // Open the DevTools.
   //previewWindow.webContents.openDevTools()
-}
+}*/
 
 // see https://github.com/mran3/Text-File-Loader-Build/blob/master/main.js
 if(require('electron-squirrel-startup')) {
   // see https://github.com/daltonmenezes/electron-screen-recorder/blob/master/src/main/index.js
+  console.log('quit')
   app.quit()
   return
 }
@@ -395,9 +372,6 @@ app.whenReady().then(() => {
   const { width, height } = primaryDisplay.size
   screenWidth = width
   screenHeight = height
-  //console.log('screen width/height=',width,height)
-  scaleX = realRect.width / width
-  scaleY = realRect.height / height
 
   const ret = globalShortcut.register(shortCut, () => {
     //console.log(shortCut + ' is pressed')
@@ -410,69 +384,38 @@ app.whenReady().then(() => {
 
   // Check whether a shortcut is registered.
   //console.log(globalShortcut.isRegistered(shortCut))
-  createWindow(width,height,() => {
-    // find our window id
-    let windows = windowManager.getWindows()
-    for (let w of windows) {
-      if (w.processId === myid)
-      {
-        //console.log('found my window id',w.id)
-        mainWindowId = w.id
-        break
-      }
-    }
-
+  createWindow(() => {
     if (app.dock) app.dock.hide();
-
-
-
     tray = new Tray(getIcon());
-    //tray.setPressedImage(path.join(__dirname, 'icon-light.png'));
-
     updateMenu()
     if (process.platform === 'win32') {
       tray.on('click', () => tray.popUpContextMenu(menu));
     }
-    tray.setToolTip('Screegle');
-    //tray.setContextMenu(menu)
-  
-    mainWindow.webContents.send('fromMain',{showDock})
-    mainWindow.webContents.send('fromMain',{showMenu})
-    mainWindow.webContents.send('fromMain',{textOverlay})
-    mainWindow.webContents.send('fromMain',{background})
-    if (isWindows)
-      mainWindow.webContents.send('fromMain',{dock: 'windows-taskbar.png'})
-    // move out of view as much as possible
-    if (roundedCorners)
-      mainWindow.setBounds({x:screenWidth-BORDER,y:screenHeight-BORDER,width:realRect.width,height:realRect.height})
-
-    //console.log('mainWindowId=',mainWindowId)
-    createPreviewWindow(width,height,() => {
-      //previewWindow.setBounds({x:width-previewRect.width-BORDER,y:BORDER+24,width:previewRect.width,height:previewRect.height})
-      previewWindow.webContents.send("fromMain", {mediaSourceId:'window:' + mainWindowId + ':0',rect:previewRect})
-      setTimeout(() => {
-        interval = setInterval(() => repositionWindows(),300)
-        intervalCursor = setInterval(() => repositionCursor(),10)
-      },100);
-
-    })
-
+    tray.setToolTip(appName);
+    setTimeout(() => {
+      interval = setInterval(() => repositionWindows(),100)
+    },100);
   })
+
   app.on('activate', async function () {
     // On macOS it's common to re-create a window in the app when the
     // dock icon is clicked and there are no other windows open.
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+
+  dialog.showMessageBoxSync({
+    message: appName,
+    detail: 'Record any window by moving your cursor over it and press Command F1',
+    defaultId: 0,
+    buttons: ['Ok']
+  })
 })
 
 app.on('will-quit', () => {
+  console.log('will-quit')
   clearInterval(interval)
-  clearInterval(intervalCursor)
-  //clearTimeout(snapshotTimeout)
-  //console.log('will-quit')
   // Unregister a shortcut.
   globalShortcut.unregister(shortCut)
-
   // Unregister all shortcuts.
   globalShortcut.unregisterAll()
 })
@@ -481,15 +424,12 @@ app.on('will-quit', () => {
 // for applications and their menu bar to stay active until the user quits
 // explicitly with Cmd + Q.
 app.on('window-all-closed', function () {
+  console.log('all closed, quitting')
   if (process.platform !== 'darwin') app.quit()
 })
 
-// In this file you can include the rest of your app's specific main process
-// code. You can also put them in separate files and require them here.
-
-
 const getRecodingIcon = () => {
-  return path.join(__dirname, '/assets/recording.png');
+  return path.join(__dirname, '/assets/icon.png');
 }
 
 const getIcon = () => {
@@ -501,171 +441,17 @@ app.on('ready', function() {
   //console.log('ready')
 });
 
-async function pickImage() {
-  const { filePaths } = await dialog.showOpenDialog({
-    filters: [
-      { name: 'Images', extensions: ['jpg', 'png', 'jpeg'] },
-    ],
-    //defaultPath: '~/Downloads'
-  });
-  if (filePaths && filePaths.length === 1) {
-    let filePath = filePaths[0]
-    const image = nativeImage.createFromPath(filePath).resize({width:1280})
-    const dataURI = image.toDataURL()
-    background = dataURI
-    store.set('background',dataURI)
-    mainWindow.webContents.send('fromMain',{background:dataURI})
-    updateMenu()
-  }
-}
 
 const updateMenu = () => {
   menu = Menu.buildFromTemplate([
     {
-      label: 'Share/unshare Windows with Command + F1',
+      label: 'Command F1 to record the window under cursor',
       enabled: false,
     },
-    {
-      label: 'Show Screegle Preview',
-      click() { previewWindow.show(); },
-    },
-    {
-      label: 'Hide All Windows (or click them in preview)',
-      click() { unhighlightAll() },
-    },
     { type: 'separator' },
     {
-      label: recording?'Stop Recording':'Start Recording',
-      click() { toggleRecording() },
-    },
-    { type: 'separator' },
-    {
-      label: 'Text Overlay...',
-      async click() {
-        let val = await promptNow('Screegle','Text Overlay',textOverlay);
-        if (val !== null) {
-          textOverlay = val
-          store.set('textOverlay',textOverlay)
-          mainWindow.webContents.send('fromMain',{textOverlay})
-        }
-      },
-    },
-    isWindows?{label:'',visible:false}:{
-      label: 'Menu',
-      async click() {
-        showMenu = !showMenu
-        store.set('showMenu',showMenu)
-        mainWindow.webContents.send('fromMain',{showMenu})
-        updateMenu()
-      },
-      type: showMenu?'checkbox':'normal',
-      checked: showMenu,
-    },
-    {
-      label: isWindows?'Taskbar':'Dock',
-      async click() {
-        showDock = !showDock
-        store.set('showDock',showDock)
-        mainWindow.webContents.send('fromMain',{showDock})
-        updateMenu()
-      },
-      type: showDock?'checkbox':'normal',
-      checked: showDock,
-    },
-    {
-      label: 'Background',
-      submenu: isWindows?
-      Menu.buildFromTemplate([
-        {
-          label: 'Default',
-          async click() {
-            background = 'windows11.jpg'
-            store.set('background',background)
-            mainWindow.webContents.send('fromMain',{background})
-            updateMenu()
-          },
-          type: 'checkbox',
-          checked: background === 'windows11.jpg'
-        },
-        {
-          label: 'Water',
-          async click() {
-            background = 'windows112.jpg'
-            store.set('background',background)
-            mainWindow.webContents.send('fromMain',{background})
-            updateMenu()
-          },
-          type: 'checkbox',
-          checked: background === 'windows112.jpg'
-        },
-        {
-          label: 'Custom Image...',
-          async click() {
-            pickImage()
-          },
-          type: 'checkbox',
-          checked: background !== 'windows112.jpg' && background !== 'windows11.jpg'
-        },
-      ]):
-      Menu.buildFromTemplate([
-        {
-          label: 'Big Sur',
-          async click() {
-            background = 'bigsur.jpg'
-            store.set('background',background)
-            mainWindow.webContents.send('fromMain',{background})
-            updateMenu()
-          },
-          type: 'checkbox',
-          checked: background ==='bigsur.jpg'
-        },
-        {
-          label: 'Monterey',
-          async click() {
-            background = 'monterey.jpg'
-            store.set('background',background)
-            mainWindow.webContents.send('fromMain',{background})
-            updateMenu()
-          },
-          type: 'checkbox',
-          checked: background === 'monterey.jpg'
-        },
-        {
-          label: 'Custom Image...',
-          async click() {
-            pickImage()
-          },
-          type: 'checkbox',
-          checked: background !== 'monterey.jpg' && background !== 'bigsur.jpg'
-        },
-      ]),
-      async click() {
-        const { filePaths } = await dialog.showOpenDialog({
-          message: 'Pick an image to use as background',
-          filters: [
-            { name: 'Images', extensions: ['jpg', 'png', 'gif'] },
-          ],
-          defaultPath: '~/Downloads'
-        });
-        //console.log(filePaths)
-        if (filePaths && filePaths.length === 1) {
-          let filePath = filePaths[0]
-          store.set('background',filePath)
-          mainWindow.webContents.send('fromMain',{background:filePath})
-          updateMenu()
-        }
-      },
-    },
-    { type: 'separator' },
-    {
-      label: 'Help',
-      click() { showHelp() },
-      //accelerator: 'CommandOrControl+Q'
-    },
-    { type: 'separator' },
-    {
-      label: 'Contact Us <laurent@appblit.com>',
-      click() { shell.openExternal("mailto:laurent@appblit.com?subject=Screegle") },
+      label: 'Contact <laurent@appblit.com>',
+      click() { shell.openExternal("mailto:laurent@appblit.com?subject=ScreenRun") },
       //accelerator: 'CommandOrControl+Q'
     },
     { type: 'separator' },
@@ -673,11 +459,6 @@ const updateMenu = () => {
       label: 'Quit',
       click() {
         clearInterval(interval)
-        //console.log('app.quit')
-        /*mainWindow.close()
-        previewWindow.close()
-        if (helpWindow)
-          helpWindow.close()*/
         app.quit();
       },
       //accelerator: 'CommandOrControl+Q'
@@ -685,33 +466,6 @@ const updateMenu = () => {
   ]);
   tray.setContextMenu(menu)
 };
-
-let recording = false
-function toggleRecording() {
-  recording = !recording
-  updateMenu()
-  if (recording)
-    tray.setImage(getRecodingIcon())
-  else
-    tray.setImage(getIcon())
-  previewWindow.webContents.send('fromMain',{toggleRecording:true})
-}
-function unhighlightAll() {
-  for (let entry in capturedWindows) {
-    let wnd = capturedWindows[entry]
-    unhighlight(wnd.mediaSourceId)
-  }
-}
-
-function unhighlight(mediaSourceId) {
-  let id = parseInt(mediaSourceId.split(':')[1])
-  if (capturedWindows[id]) {
-    let res = capturedWindows[id]
-    res.highlightWindow.close();
-    mainWindow.webContents.send("fromMain", {stop:mediaSourceId});
-    delete capturedWindows[id]
-  }
-}
 
 /*const ffmpeg = require("ffmpeg.js/ffmpeg-mp4")
 
@@ -736,32 +490,39 @@ function webmToMp4(webmData) {
 	}).MEMFS[0].data.buffer
 }*/
 
+function getClicks() {
+  let res = [capturedBounds.width,capturedBounds.height]
+  for (let m of mouseClicks) {
+    let e = m.x + "," + (capturedBounds.height - m.y) + "," + m.ts
+    res.push(e)
+  }
+  return 'screenrun:' + res.join(',')
+}
+
 async function saveVideo(buffer) {
+  mainWindow.show()
+  writeFileSync('in.webm',buffer)
+  let clicks = getClicks()
+  console.log(clicks)
+  exec(pathToFfmpeg + ` -i in.webm -metadata title="${clicks}" -c:a aac out.mp4`)
+  mainWindow.hide()
   const { filePath } = await dialog.showSaveDialog({
     buttonLabel: 'Save video',
-    defaultPath: 'screegle.webm',
+    defaultPath: 'screenrun.mp4',
   });
   if (!filePath) {
-    if (await dialog.showMessageBoxSync({defaultId: 1, message: 'Are you sure?', buttons:['Do Not Save','Try Again']}) === 0)
+    if (dialog.showMessageBoxSync({defaultId: 1, message: 'Are you sure?', buttons:['Do Not Save','Try Again']}) === 0)
       return
     else
       return saveVideo(buffer)
   }
-  /*let mp4 = filePath.replace('.webm','.mp4')
-  console.log('converting to mp4...')
-  writeFile(mp4, Buffer.from(webmToMp4(buffer)), (err) => {
+  rename('out.mp4',filePath,(err) => {
+    unlinkSync('in.webm')
     if (err)
-      console.log('error mp4')
-    else
-      console.log('mp4 file written',mp4)
-  });*/
-
-  writeFile(filePath, buffer, async (err) => {
-    if (err)
-      dialog.showErrorBox("Screegle","Error saving your video")
+      dialog.showErrorBox(appName,"Error saving your video")
     else {
       let button = dialog.showMessageBoxSync({
-        message: 'Screegle',
+        message: appName,
         detail: `Video saved as ${filePath}`,
         defaultId: 0,
         buttons: ['View','Cancel']
@@ -769,7 +530,7 @@ async function saveVideo(buffer) {
       if (button === 0)
         shell.showItemInFolder(filePath);
     }
-  });
+  })
 }
 
 ipcMain.on('buffer', async (event, buffer) => {
@@ -778,14 +539,8 @@ ipcMain.on('buffer', async (event, buffer) => {
 })
 
 ipcMain.on("toMain", (event, args) => {
-  if (args.click) {
-    let payload = {click:args.click,scale:previewScale}
-    //console.log('sending to mainwindow',payload)
-    mainWindow.webContents.send("fromMain", payload);
-  } else if (args.videoClicked) {
-    let mediaSourceId = args.videoClicked
-    unhighlight(mediaSourceId)
-  } else if (args.recordingCaption) {
+  if (args.recordingCaption) {
     tray.setTitle(args.recordingCaption)
-  }
+  } else if (args.startTime !== undefined)
+    startTime = args.startTime
 });

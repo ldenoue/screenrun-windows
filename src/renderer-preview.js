@@ -38,7 +38,8 @@ async function startRecording() {
   if (audioTrack)
     stream.addTrack(audioTrack);
 
-  mediaRecorder = new MediaRecorder(stream)
+  let options = { mimeType: 'video/webm;codecs=vp9'}
+  mediaRecorder = new MediaRecorder(stream, options)
   mediaRecorder.ondataavailable = function(e) {
     chunks.push(e.data);
   }
