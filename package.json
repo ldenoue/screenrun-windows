@@ -57,11 +57,8 @@
     }
   },
   "dependencies": {
-    "electron-iohook": "^0.1.2",
-    "electron-prompt": "^1.7.0",
     "electron-squirrel-startup": "^1.0.0",
     "ffmpeg-static": "^5.1.0",
-    "mac-screen-capture-permissions": "^2.0.0",
     "node-window-manager": "^2.2.4"
   },
   "devDependencies": {

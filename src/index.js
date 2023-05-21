@@ -5,6 +5,8 @@ const isWindows = process.platform === 'win32'
 
 const pathToFfmpeg = require('ffmpeg-static');
 console.log(pathToFfmpeg);
+const tmpPath = app.getPath('temp')
+console.log(tmpPath)
 const { exec } = require('child_process');
 
 const appName = 'ScreenRun'
@@ -12,8 +14,8 @@ const appName = 'ScreenRun'
 let roundedCorners = true
 const { writeFile, writeFileSync, rename, unlinkSync } = require('fs')
 //console.log(writeFile)
-const prompt = require('electron-prompt');
-const Store = require('./store.js');
+//const prompt = require('electron-prompt');
+/*const Store = require('./store.js');
 const store = new Store({
   // We'll call our data file 'user-preferences'
   configName: 'user-preferences',
@@ -23,9 +25,10 @@ const store = new Store({
     textOverlay: appName,
     background: 'bigsur.jpg'
   }
-});
+});*/
 
-const { windowManager } = require('node-window-manager')
+const { windowManager } = require('node-window-manager');
+//const { outputFile } = require('fs-extra');
 
 const windowWidth = 320
 const windowHeight = 240
@@ -308,7 +311,7 @@ function createWindow (callback) {
   //mainWindow.webContents.openDevTools()
 }
 
-async function promptNow(title,label,value) {
+/*async function promptNow(title,label,value) {
   let res = await prompt({
     height:200,
     title: title,
@@ -320,7 +323,7 @@ async function promptNow(title,label,value) {
     type: 'input'
   })
   return res;
-}
+}*/
 
 /*async function createPreviewWindow (w,h,callback) {
   previewWindow = new BrowserWindow({
@@ -500,11 +503,19 @@ function getClicks() {
 }
 
 async function saveVideo(buffer) {
+  
+  const inputPath = path.join(tmpPath, 'in.webm')
+  const outputPath = path.join(tmpPath, 'out.mp4')
+  console.log(inputPath,outputPath)
   mainWindow.show()
-  writeFileSync('in.webm',buffer)
-  let clicks = getClicks()
-  console.log(clicks)
-  exec(pathToFfmpeg + ` -i in.webm -metadata title="${clicks}" -c:a aac out.mp4`)
+  try {
+    writeFileSync(inputPath,buffer)
+    let clicks = getClicks()
+    console.log(clicks)
+    exec(pathToFfmpeg + ` -i ${inputPath} -metadata title="${clicks}" -c:a aac ${outputPath}`)
+  } catch (econvert) {
+    dialog.showMessageBox(econvert)
+  }
   mainWindow.hide()
   const { filePath } = await dialog.showSaveDialog({
     buttonLabel: 'Save video',
@@ -516,8 +527,8 @@ async function saveVideo(buffer) {
     else
       return saveVideo(buffer)
   }
-  rename('out.mp4',filePath,(err) => {
-    unlinkSync('in.webm')
+  rename(outputPath,filePath,(err) => {
+    unlinkSync(inputPath)
     if (err)
       dialog.showErrorBox(appName,"Error saving your video")
     else {
